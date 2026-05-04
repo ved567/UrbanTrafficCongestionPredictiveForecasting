@@ -1,0 +1,9 @@
+# Environments
+.env
+
+# Data files
+*.csv
+*.db
+*.json
+__pycache__/
+*.pyc
