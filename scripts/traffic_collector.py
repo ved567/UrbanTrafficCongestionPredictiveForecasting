@@ -1,12 +1,12 @@
 import requests
-import sqlite3
+import sqlite3 
 import time
 from datetime import datetime
 
 API_KEY = "Bs4uffOtSpdO8Fj7QF2legoU1iRowti8"
 
 def setup_and_collect():
-    conn = sqlite3.connect("traffic_data.db")
+    conn = sqlite3.connect("data/traffic_data.db")
     cur = conn.cursor()
     
     cur.execute("""
@@ -18,7 +18,7 @@ def setup_and_collect():
             captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
-    conn.commit()
+    conn.commit()  
 
     url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key={API_KEY}&point=40.7478,-73.9718"
     
@@ -35,10 +35,9 @@ def setup_and_collect():
                         (flow['currentSpeed'], flow['freeFlowSpeed'], flow['confidence'])
                     )
                     conn.commit()
-            else:
-                pass
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Saved: {flow['currentSpeed']} mph")
         except Exception as e:
-            pass
+            print(f"Error: {e}")
 
         time.sleep(300)
 
