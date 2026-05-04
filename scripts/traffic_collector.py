@@ -1,11 +1,19 @@
 import requests
 import sqlite3 
 import time
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
-API_KEY = "Bs4uffOtSpdO8Fj7QF2legoU1iRowti8"
+load_dotenv()
+
+API_KEY = os.getenv("TOMTOM_API_KEY")
 
 def setup_and_collect():
+    if not API_KEY:
+        print("Error: TOMTOM_API_KEY not found in .env file.")
+        return
+
     conn = sqlite3.connect("data/traffic_data.db")
     cur = conn.cursor()
     
