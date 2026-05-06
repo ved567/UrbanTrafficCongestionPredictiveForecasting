@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+requests
+tinydb
+python-dotenv
+scikit-learn
+torch
+altair
