@@ -1,9 +1,7 @@
-# Environments
 .env
 
-# Data files
 *.csv
-*.db
+*.db*
 *.json
 __pycache__/
 *.pyc.DS_Store
