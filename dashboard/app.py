@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import timedelta
 import json
+import sqlite3
 
 import altair as alt
 import numpy as np
@@ -11,13 +12,14 @@ import torch.nn as nn
 from sklearn.preprocessing import MinMaxScaler
 from tinydb import TinyDB
 
+# Professional paths for database and model
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 MODEL_DIR = ROOT / "models"
 
+DB_PATH = DATA_DIR / "traffic_data.db"
 FINAL_CSV = DATA_DIR / "final_ai_data.csv"
 ACCIDENTS_JSON = DATA_DIR / "accidents_nosql.json"
-
 MODEL_PATH = MODEL_DIR / "traffic_lstm.pth"
 METRICS_PATH = MODEL_DIR / "metrics.json"
 LSTM_PREDICTIONS_PATH = MODEL_DIR / "lstm_predictions.csv"
@@ -28,10 +30,7 @@ st.set_page_config(
     layout="wide"
 )
 
-
-
 # Helpers
-
 
 def classify_congestion(speed, normal_speed):
     if normal_speed <= 0 or pd.isna(speed) or pd.isna(normal_speed):
@@ -83,6 +82,28 @@ def weather_code_to_text(code):
     }
 
     return weather_map.get(code, f"Code {code}")
+
+
+def load_traffic():
+    """Load raw traffic data from the local SQLite database."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            """
+            SELECT captured_at, current_speed, free_flow_speed
+            FROM tomtom_traffic
+            ORDER BY datetime(captured_at)
+            """,
+            conn
+        )
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Could not read traffic database: {e}")
+        return pd.DataFrame()
 
 
 def load_final_data():
@@ -313,10 +334,9 @@ def make_lstm_short_forecast(df):
         return pd.DataFrame({"Error": [str(e)]}), "error"
 
 
-
 # Load files
 
-
+traffic_df = load_traffic()
 df = load_final_data()
 accidents_df = load_accidents()
 metrics = load_metrics()
@@ -324,9 +344,7 @@ lstm_predictions, arima_predictions = load_predictions()
 forecast_df, forecast_status = make_lstm_short_forecast(df)
 
 
-
 # Page title
-
 
 st.title("Urban Traffic Congestion Predictive Forecasting")
 
@@ -366,9 +384,7 @@ overview_tab, forecast_tab, model_tab, crash_tab, pipeline_tab = st.tabs(
 )
 
 
-
 # Overview
-
 
 with overview_tab:
     st.subheader("Current Traffic Conditions")
@@ -451,9 +467,7 @@ with overview_tab:
         st.dataframe(friendly_df.tail(100), use_container_width=True, hide_index=True)
 
 
-
 # Future Forecast
-
 
 with forecast_tab:
     st.subheader("Future Congestion Forecast")
@@ -509,9 +523,7 @@ with forecast_tab:
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
 
-
 # Model Results
-
 
 with model_tab:
     st.subheader("Model Results")
@@ -628,7 +640,6 @@ with model_tab:
         st.info("Run `python models/evaluate_models.py` to generate LSTM and ARIMA prediction files.")
 
 
-
 # Crash History
 
 with crash_tab:
@@ -693,9 +704,7 @@ with crash_tab:
             st.dataframe(friendly_accidents.head(100), use_container_width=True, hide_index=True)
 
 
-
 # Project Pipeline
-
 
 with pipeline_tab:
     st.subheader("Project Purpose")
