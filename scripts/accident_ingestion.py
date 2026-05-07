@@ -3,6 +3,10 @@ import json
 from tinydb import TinyDB
 
 def setup_local_nosql():
+    """
+    Ingests historical NYC collision data from a raw JSON file, 
+    filters for FDR Drive accidents, and stores them in a local TinyDB instance.
+    """
     db = TinyDB("data/accidents_nosql.json")
     db.truncate()
 
@@ -18,7 +22,6 @@ def setup_local_nosql():
     fdr_accidents['hour'] = fdr_accidents['full_crash_time'].dt.hour
     fdr_accidents['day_of_week'] = fdr_accidents['full_crash_time'].dt.dayofweek
 
-    # Convert Timestamp objects to strings so TinyDB can save them
     fdr_accidents['full_crash_time'] = fdr_accidents['full_crash_time'].astype(str)
 
     records = fdr_accidents.to_dict(orient='records')
