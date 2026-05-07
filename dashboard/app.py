@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import timedelta
-import sqlite3
+import json
 
 import altair as alt
 import numpy as np
@@ -13,16 +13,24 @@ from tinydb import TinyDB
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
+MODEL_DIR = ROOT / "models"
 
-DB_PATH = DATA_DIR / "traffic_data.db"
 FINAL_CSV = DATA_DIR / "final_ai_data.csv"
 ACCIDENTS_JSON = DATA_DIR / "accidents_nosql.json"
-MODEL_PATH = ROOT / "models" / "traffic_lstm.pth"
+
+MODEL_PATH = MODEL_DIR / "traffic_lstm.pth"
+METRICS_PATH = MODEL_DIR / "metrics.json"
+LSTM_PREDICTIONS_PATH = MODEL_DIR / "lstm_predictions.csv"
+ARIMA_PREDICTIONS_PATH = MODEL_DIR / "arima_predictions.csv"
 
 st.set_page_config(
     page_title="Urban Traffic Congestion Forecasting",
     layout="wide"
 )
+
+
+
+# Helpers
 
 
 def classify_congestion(speed, normal_speed):
@@ -77,58 +85,33 @@ def weather_code_to_text(code):
     return weather_map.get(code, f"Code {code}")
 
 
-def load_traffic():
-    if not DB_PATH.exists():
-        return pd.DataFrame()
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-
-        df = pd.read_sql_query(
-            """
-            SELECT captured_at, current_speed, free_flow_speed
-            FROM tomtom_traffic
-            ORDER BY datetime(captured_at)
-            """,
-            conn
-        )
-
-        conn.close()
-        return df
-
-    except Exception as e:
-        st.error(f"Could not read traffic database: {e}")
-        return pd.DataFrame()
-
-
-def load_merged_data():
+def load_final_data():
     if not FINAL_CSV.exists():
         return pd.DataFrame()
 
-    try:
-        df = pd.read_csv(FINAL_CSV)
+    df = pd.read_csv(FINAL_CSV)
 
+    if "captured_at" in df.columns:
         df["captured_at"] = pd.to_datetime(df["captured_at"], errors="coerce")
 
-        numeric_cols = [
-            "current_speed",
-            "free_flow_speed",
-            "historical_crash_count",
-            "hour",
-            "day_of_week",
-            "temperature",
-            "weather_code"
-        ]
+    numeric_cols = [
+        "current_speed",
+        "free_flow_speed",
+        "historical_crash_count",
+        "hour",
+        "day_of_week",
+        "temperature",
+        "weather_code"
+    ]
 
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        return df
+    if "captured_at" in df.columns:
+        df = df.dropna(subset=["captured_at"]).sort_values("captured_at")
 
-    except Exception as e:
-        st.warning(f"Could not load merged dataset: {e}")
-        return pd.DataFrame()
+    return df
 
 
 def load_accidents():
@@ -141,32 +124,103 @@ def load_accidents():
         return pd.DataFrame()
 
 
+def load_metrics():
+    if not METRICS_PATH.exists():
+        return None
+
+    try:
+        with open(METRICS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def load_predictions():
+    lstm_df = pd.DataFrame()
+    arima_df = pd.DataFrame()
+
+    if LSTM_PREDICTIONS_PATH.exists():
+        lstm_df = pd.read_csv(LSTM_PREDICTIONS_PATH)
+        if "captured_at" in lstm_df.columns:
+            lstm_df["captured_at"] = pd.to_datetime(lstm_df["captured_at"], errors="coerce")
+
+    if ARIMA_PREDICTIONS_PATH.exists():
+        arima_df = pd.read_csv(ARIMA_PREDICTIONS_PATH)
+        if "captured_at" in arima_df.columns:
+            arima_df["captured_at"] = pd.to_datetime(arima_df["captured_at"], errors="coerce")
+
+    return lstm_df, arima_df
+
+
+def red_line_chart(df, x_col, value_cols, x_title, y_title):
+    if df.empty:
+        st.warning("No data available for this chart.")
+        return
+
+    usable_cols = [col for col in value_cols if col in df.columns]
+
+    if not usable_cols or x_col not in df.columns:
+        st.warning("Chart columns were not found.")
+        return
+
+    chart_df = df[[x_col] + usable_cols].dropna().copy()
+
+    if chart_df.empty:
+        st.warning("Not enough data to draw this chart.")
+        return
+
+    chart_long = chart_df.melt(
+        id_vars=x_col,
+        value_vars=usable_cols,
+        var_name="Type",
+        value_name="Value"
+    )
+
+    if pd.api.types.is_datetime64_any_dtype(chart_df[x_col]):
+        x_encoding = alt.X(f"{x_col}:T", title=x_title)
+    else:
+        x_encoding = alt.X(f"{x_col}:Q", title=x_title)
+
+    chart = (
+        alt.Chart(chart_long)
+        .mark_line(strokeWidth=3)
+        .encode(
+            x=x_encoding,
+            y=alt.Y("Value:Q", title=y_title),
+            color=alt.Color(
+                "Type:N",
+                scale=alt.Scale(
+                    range=["#991b1b", "#fca5a5", "#dc2626", "#fecaca"]
+                ),
+                legend=alt.Legend(title=None)
+            ),
+            tooltip=[x_col, "Type", "Value"]
+        )
+        .properties(height=350)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 class TrafficLSTM(nn.Module):
     def __init__(self):
-        super(TrafficLSTM, self).__init__()
-
+        super().__init__()
         self.lstm = nn.LSTM(
             input_size=5,
             hidden_size=50,
             num_layers=2,
             batch_first=True
         )
-
         self.fc = nn.Linear(50, 1)
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])
-        return out
+        return self.fc(out[:, -1, :])
 
 
-def load_model():
+def load_lstm_model():
     model = TrafficLSTM()
-
-    checkpoint = torch.load(
-        MODEL_PATH,
-        map_location=torch.device("cpu")
-    )
+    checkpoint = torch.load(MODEL_PATH, map_location=torch.device("cpu"))
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -177,8 +231,8 @@ def load_model():
     return model
 
 
-def create_forecast(merged_df):
-    features = [
+def make_lstm_short_forecast(df):
+    required_features = [
         "historical_crash_count",
         "hour",
         "day_of_week",
@@ -186,18 +240,23 @@ def create_forecast(merged_df):
         "weather_code"
     ]
 
-    if merged_df.empty or not MODEL_PATH.exists():
+    required_cols = required_features + ["current_speed", "free_flow_speed", "captured_at"]
+
+    if df.empty or not MODEL_PATH.exists():
         return pd.DataFrame(), "missing"
 
-    model_df = merged_df.dropna(
-        subset=features + ["current_speed", "free_flow_speed"]
-    ).copy()
+    missing_cols = [col for col in required_cols if col not in df.columns]
+
+    if missing_cols:
+        return pd.DataFrame({"Missing Columns": missing_cols}), "missing_columns"
+
+    model_df = df.dropna(subset=required_cols).copy()
 
     if len(model_df) < 5:
         return pd.DataFrame(), "not_enough_data"
 
     try:
-        X = model_df[features].values.astype(np.float32)
+        X = model_df[required_features].values.astype(np.float32)
         y = model_df["current_speed"].values.astype(np.float32).reshape(-1, 1)
 
         scaler_X = MinMaxScaler()
@@ -206,7 +265,7 @@ def create_forecast(merged_df):
         scaler_X.fit(X)
         scaler_y.fit(y)
 
-        model = load_model()
+        model = load_lstm_model()
 
         latest_row = model_df.iloc[-1]
         latest_time = pd.to_datetime(latest_row["captured_at"])
@@ -226,10 +285,10 @@ def create_forecast(merged_df):
             }])
 
             X_future_scaled = scaler_X.transform(
-                future_input[features].values.astype(np.float32)
+                future_input[required_features].values.astype(np.float32)
             )
 
-            X_future_tensor = torch.FloatTensor(X_future_scaled).unsqueeze(1)
+            X_future_tensor = torch.FloatTensor(X_future_scaled).reshape(1, 1, len(required_features))
 
             with torch.no_grad():
                 pred_scaled = model(X_future_tensor).numpy()
@@ -254,60 +313,43 @@ def create_forecast(merged_df):
         return pd.DataFrame({"Error": [str(e)]}), "error"
 
 
-def red_line_chart(df, time_col, value_cols, title_x, title_y):
-    chart_df = df[[time_col] + value_cols].copy()
 
-    chart_long = chart_df.melt(
-        id_vars=time_col,
-        value_vars=value_cols,
-        var_name="Type",
-        value_name="Value"
-    )
-
-    color_range = ["#991b1b", "#fca5a5", "#ef4444", "#fecaca"]
-
-    chart = (
-        alt.Chart(chart_long)
-        .mark_line(strokeWidth=3)
-        .encode(
-            x=alt.X(f"{time_col}:T" if "Time" in time_col else f"{time_col}:Q", title=title_x),
-            y=alt.Y("Value:Q", title=title_y),
-            color=alt.Color(
-                "Type:N",
-                scale=alt.Scale(range=color_range),
-                legend=alt.Legend(title=None)
-            ),
-            tooltip=[time_col, "Type", "Value"]
-        )
-        .properties(height=350)
-    )
-
-    st.altair_chart(chart, use_container_width=True)
+# Load files
 
 
-traffic_df = load_traffic()
-merged_df = load_merged_data()
+df = load_final_data()
 accidents_df = load_accidents()
+metrics = load_metrics()
+lstm_predictions, arima_predictions = load_predictions()
+forecast_df, forecast_status = make_lstm_short_forecast(df)
+
+
+
+# Page title
+
 
 st.title("Urban Traffic Congestion Predictive Forecasting")
 
 st.write(
-    "This dashboard uses live TomTom traffic data, NYC crash history, weather data, "
-    "and an LSTM model to estimate short-term traffic congestion."
+    "This dashboard uses traffic speed, crash history, weather data, and machine learning "
+    "to estimate short-term congestion on FDR Drive."
 )
 
-if traffic_df.empty:
-    st.error("No traffic data found.")
-    st.write("Run the pipeline first:")
-    st.code("python3 run_all.py", language="bash")
+if df.empty:
+    st.error("No processed traffic dataset found.")
+    st.write("Run these commands first:")
+    st.code(
+        "python scripts/feature_engineering.py\npython models/evaluate_models.py",
+        language="bash"
+    )
     st.stop()
 
-traffic_df["captured_at"] = pd.to_datetime(traffic_df["captured_at"], errors="coerce")
-traffic_df["current_speed"] = pd.to_numeric(traffic_df["current_speed"], errors="coerce")
-traffic_df["free_flow_speed"] = pd.to_numeric(traffic_df["free_flow_speed"], errors="coerce")
-traffic_df = traffic_df.dropna().sort_values("captured_at")
 
-latest = traffic_df.iloc[-1]
+# ======================================================
+# Main values
+# ======================================================
+
+latest = df.iloc[-1]
 
 current_speed = float(latest["current_speed"])
 normal_speed = float(latest["free_flow_speed"])
@@ -318,11 +360,15 @@ if normal_speed > 0:
 else:
     slowdown_percent = 0
 
-forecast_df, forecast_status = create_forecast(merged_df)
 
-overview_tab, forecast_tab, crash_tab, pipeline_tab = st.tabs(
-    ["Overview", "Future Forecast", "Crash History", "Project Pipeline"]
+overview_tab, forecast_tab, model_tab, crash_tab, pipeline_tab = st.tabs(
+    ["Overview", "Future Forecast", "Model Results", "Crash History", "Project Pipeline"]
 )
+
+
+
+# Overview
+
 
 with overview_tab:
     st.subheader("Current Traffic Conditions")
@@ -340,8 +386,10 @@ with overview_tab:
 
     st.info(congestion_description(current_level))
 
-    st.write(f"Last updated: **{latest['captured_at']}**")
-    st.write(f"Traffic readings collected: **{len(traffic_df)}**")
+    if "captured_at" in df.columns:
+        st.write(f"Last updated: **{latest['captured_at']}**")
+
+    st.write(f"Traffic records in dataset: **{len(df)}**")
 
     st.subheader("Traffic Speed Over Time")
 
@@ -350,7 +398,7 @@ with overview_tab:
         "A larger gap means more congestion."
     )
 
-    chart_df = traffic_df.rename(
+    chart_df = df.rename(
         columns={
             "captured_at": "Time",
             "current_speed": "Current Speed",
@@ -360,77 +408,55 @@ with overview_tab:
 
     red_line_chart(
         chart_df,
-        time_col="Time",
+        x_col="Time",
         value_cols=["Current Speed", "Normal Speed"],
-        title_x="Time",
-        title_y="Speed (mph)"
+        x_title="Time",
+        y_title="Speed (mph)"
     )
-
-    with st.expander("Show recent traffic readings"):
-        display_traffic = traffic_df.tail(50).rename(
-            columns={
-                "captured_at": "Time Collected",
-                "current_speed": "Current Speed (mph)",
-                "free_flow_speed": "Normal Speed (mph)"
-            }
-        )
-
-        st.dataframe(display_traffic, use_container_width=True, hide_index=True)
 
     st.subheader("Data Used for Prediction")
 
-    if merged_df.empty:
-        st.warning("Merged prediction dataset not found.")
-        st.code("python3 scripts/step2_merge.py", language="bash")
-    else:
-        model_df = merged_df.dropna()
+    d1, d2, d3, d4 = st.columns(4)
 
-        if model_df.empty:
-            st.warning("Merged dataset exists, but it does not have enough usable rows.")
-        else:
-            latest_data = model_df.iloc[-1]
+    crash_count = latest.get("historical_crash_count", 0)
+    temperature = latest.get("temperature", None)
+    weather_code = latest.get("weather_code", None)
+    hour = latest.get("hour", None)
 
-            d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Past Crashes at Similar Times", int(crash_count) if pd.notna(crash_count) else "N/A")
+    d2.metric("Temperature", f"{float(temperature):.1f} °C" if pd.notna(temperature) else "N/A")
+    d3.metric("Weather", weather_code_to_text(weather_code))
+    d4.metric("Time of Day", f"{int(hour)}:00" if pd.notna(hour) else "N/A")
 
-            crash_count = latest_data.get("historical_crash_count", 0)
-            temperature = latest_data.get("temperature", None)
-            weather_code = latest_data.get("weather_code", None)
-            hour = latest_data.get("hour", None)
+    st.write(
+        "The model uses traffic speed, crash history, time of day, day of week, "
+        "weather, and temperature."
+    )
 
-            d1.metric("Past Crashes at Similar Times", int(crash_count))
-            d2.metric("Temperature", f"{float(temperature):.1f} °C" if pd.notna(temperature) else "N/A")
-            d3.metric("Weather", weather_code_to_text(weather_code))
-            d4.metric("Time of Day", f"{int(hour)}:00" if pd.notna(hour) else "N/A")
+    with st.expander("Show merged prediction data"):
+        rename_map = {
+            "captured_at": "Time Collected",
+            "current_speed": "Current Speed (mph)",
+            "free_flow_speed": "Normal Speed (mph)",
+            "historical_crash_count": "Past Crashes at Similar Time",
+            "temperature": "Temperature (°C)",
+            "weather_code": "Weather Code",
+            "hour": "Hour of Day",
+            "day_of_week": "Day of Week"
+        }
 
-            st.write(
-                "The model uses traffic speed, crash history, time of day, day of week, "
-                "weather, and temperature."
-            )
+        keep_cols = [col for col in rename_map if col in df.columns]
+        friendly_df = df[keep_cols].rename(columns=rename_map)
 
-            with st.expander("Show merged prediction data"):
-                rename_map = {
-                    "captured_at": "Time Collected",
-                    "current_speed": "Current Speed (mph)",
-                    "free_flow_speed": "Normal Speed (mph)",
-                    "historical_crash_count": "Past Crashes at Similar Time",
-                    "temperature": "Temperature (°C)",
-                    "weather_code": "Weather Code",
-                    "hour": "Hour of Day",
-                    "day_of_week": "Day of Week"
-                }
+        st.dataframe(friendly_df.tail(100), use_container_width=True, hide_index=True)
 
-                keep_cols = [col for col in rename_map if col in merged_df.columns]
 
-                friendly_df = merged_df[keep_cols].rename(columns=rename_map)
 
-                st.dataframe(friendly_df.tail(100), use_container_width=True, hide_index=True)
+# Future Forecast
+
 
 with forecast_tab:
     st.subheader("Future Congestion Forecast")
-
-    if not MODEL_PATH.exists():
-        st.warning("Forecast model is not ready yet.")
-        st.code("python3 models/step3_train.py", language="bash")
 
     if forecast_status == "ok" and not forecast_df.empty:
         next_row = forecast_df.iloc[0]
@@ -459,54 +485,151 @@ with forecast_tab:
 
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
-        forecast_chart_df = forecast_df[[
-            "Minutes Ahead",
-            "Predicted Speed (mph)",
-            "Normal Speed (mph)"
-        ]].copy()
-
-        forecast_long = forecast_chart_df.melt(
-            id_vars="Minutes Ahead",
-            value_vars=["Predicted Speed (mph)", "Normal Speed (mph)"],
-            var_name="Speed Type",
-            value_name="Speed"
+        red_line_chart(
+            forecast_df,
+            x_col="Minutes Ahead",
+            value_cols=["Predicted Speed (mph)", "Normal Speed (mph)"],
+            x_title="Minutes Ahead",
+            y_title="Speed (mph)"
         )
-
-        forecast_chart = (
-            alt.Chart(forecast_long)
-            .mark_line(strokeWidth=3)
-            .encode(
-                x=alt.X("Minutes Ahead:Q", title="Minutes Ahead"),
-                y=alt.Y("Speed:Q", title="Speed (mph)"),
-                color=alt.Color(
-                    "Speed Type:N",
-                    scale=alt.Scale(
-                        domain=["Predicted Speed (mph)", "Normal Speed (mph)"],
-                        range=["#991b1b", "#fca5a5"]
-                    ),
-                    legend=alt.Legend(title=None)
-                ),
-                tooltip=["Minutes Ahead", "Speed Type", "Speed"]
-            )
-            .properties(height=350)
-        )
-
-        st.altair_chart(forecast_chart, use_container_width=True)
-
-    elif forecast_status == "not_enough_data":
-        st.warning("More traffic readings are needed before the forecast is useful.")
-        st.write("Let the TomTom collector run longer, then rerun the merge and training steps.")
 
     elif forecast_status == "missing":
-        st.warning("The forecast cannot be shown yet because data or model files are missing.")
-        st.code(
-            "python3 scripts/step2_merge.py\npython3 models/step3_train.py",
-            language="bash"
-        )
+        st.warning("The forecast cannot be shown yet because the model or dataset is missing.")
+        st.code("python models/evaluate_models.py", language="bash")
+
+    elif forecast_status == "not_enough_data":
+        st.warning("More traffic rows are needed before the forecast is useful.")
+
+    elif forecast_status == "missing_columns":
+        st.warning("The forecast cannot be shown because required columns are missing.")
+        st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
     else:
         st.error("The forecast could not be created.")
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+
+
+
+# Model Results
+
+
+with model_tab:
+    st.subheader("Model Results")
+
+    st.write(
+        "This section compares the LSTM model with the ARIMA baseline using the saved test-set predictions."
+    )
+
+    if metrics:
+        lstm_metrics = metrics.get("lstm", {})
+        arima_metrics = metrics.get("arima", {})
+        best_model = metrics.get("best_model_by_rmse", "N/A")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric("LSTM MAE", lstm_metrics.get("mae", "N/A"))
+        col2.metric("LSTM RMSE", lstm_metrics.get("rmse", "N/A"))
+        col3.metric("ARIMA RMSE", arima_metrics.get("rmse", "N/A"))
+        col4.metric("Best Model", str(best_model).upper())
+
+        st.write(
+            "MAE and RMSE measure prediction error. Lower values mean the model predicted traffic speed more accurately."
+        )
+
+        with st.expander("Show full metrics"):
+            st.json(metrics)
+
+    else:
+        st.warning("Model comparison metrics were not found.")
+        st.write("Run this command to generate them:")
+        st.code("python models/evaluate_models.py", language="bash")
+
+    st.subheader("Actual Speed vs Model Predictions")
+
+    if not lstm_predictions.empty:
+        lstm_plot = lstm_predictions.rename(
+            columns={
+                "captured_at": "Time",
+                "current_speed": "Actual Speed",
+                "lstm_predicted_speed": "LSTM Prediction"
+            }
+        )
+
+        red_line_chart(
+            lstm_plot,
+            x_col="Time",
+            value_cols=["Actual Speed", "LSTM Prediction"],
+            x_title="Time",
+            y_title="Speed (mph)"
+        )
+
+        with st.expander("Show LSTM prediction data"):
+            display_lstm = lstm_predictions.rename(
+                columns={
+                    "captured_at": "Time",
+                    "current_speed": "Actual Speed",
+                    "free_flow_speed": "Normal Speed",
+                    "lstm_predicted_speed": "LSTM Prediction",
+                    "absolute_error": "Prediction Error",
+                    "rolling_speed_avg_3": "Rolling Speed Average",
+                    "congestion_likelihood": "Congestion Likelihood"
+                }
+            )
+            st.dataframe(display_lstm, use_container_width=True, hide_index=True)
+
+    else:
+        st.info("LSTM prediction file was not found yet.")
+
+    st.subheader("LSTM vs ARIMA Baseline")
+
+    if not lstm_predictions.empty and not arima_predictions.empty:
+        comparison_df = pd.merge(
+            lstm_predictions,
+            arima_predictions,
+            on=["captured_at", "current_speed"],
+            how="inner"
+        )
+
+        comparison_df = comparison_df.rename(
+            columns={
+                "captured_at": "Time",
+                "current_speed": "Actual Speed",
+                "lstm_predicted_speed": "LSTM Prediction",
+                "arima_predicted_speed": "ARIMA Prediction"
+            }
+        )
+
+        if not comparison_df.empty:
+            red_line_chart(
+                comparison_df,
+                x_col="Time",
+                value_cols=["Actual Speed", "LSTM Prediction", "ARIMA Prediction"],
+                x_title="Time",
+                y_title="Speed (mph)"
+            )
+
+            with st.expander("Show LSTM and ARIMA comparison data"):
+                keep_cols = [
+                    "Time",
+                    "Actual Speed",
+                    "LSTM Prediction",
+                    "ARIMA Prediction"
+                ]
+                st.dataframe(
+                    comparison_df[keep_cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        else:
+            st.info("LSTM and ARIMA predictions exist, but their timestamps did not match.")
+
+    else:
+        st.info("Run `python models/evaluate_models.py` to generate LSTM and ARIMA prediction files.")
+
+
+
+# Crash History
 
 with crash_tab:
     st.subheader("Historical Crash Information")
@@ -518,20 +641,27 @@ with crash_tab:
 
     if accidents_df.empty:
         st.warning("No crash data found.")
-        st.code("python3 scripts/step1_mongo.py", language="bash")
+        st.code("python scripts/accident_ingestion.py", language="bash")
+
     else:
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         col1.metric("Crash Records Used", len(accidents_df))
 
         if "hour" in accidents_df.columns:
-            busiest_hour = accidents_df["hour"].mode()
+            busiest_hour = pd.to_numeric(accidents_df["hour"], errors="coerce").dropna().mode()
             if not busiest_hour.empty:
                 col2.metric("Most Common Crash Time", f"{int(busiest_hour.iloc[0])}:00")
             else:
                 col2.metric("Most Common Crash Time", "N/A")
         else:
             col2.metric("Most Common Crash Time", "N/A")
+
+        if "number_of_persons_injured" in accidents_df.columns:
+            injuries = pd.to_numeric(accidents_df["number_of_persons_injured"], errors="coerce").fillna(0).sum()
+            col3.metric("Total Injuries in Records", int(injuries))
+        else:
+            col3.metric("Total Injuries in Records", "N/A")
 
         if {"latitude", "longitude"}.issubset(accidents_df.columns):
             accidents_df["latitude"] = pd.to_numeric(accidents_df["latitude"], errors="coerce")
@@ -558,28 +688,32 @@ with crash_tab:
             }
 
             keep_cols = [col for col in rename_accidents if col in accidents_df.columns]
-
             friendly_accidents = accidents_df[keep_cols].rename(columns=rename_accidents)
 
             st.dataframe(friendly_accidents.head(100), use_container_width=True, hide_index=True)
+
+
+
+# Project Pipeline
+
 
 with pipeline_tab:
     st.subheader("Project Purpose")
 
     st.write(
         "The purpose of this project is to estimate short-term traffic congestion on FDR Drive. "
-        "The system combines live traffic speed, crash history, weather, and time-based patterns."
+        "The system combines traffic speed, crash history, weather, and time-based patterns."
     )
 
     st.subheader("How the System Works")
 
     st.markdown(
         """
-        1. **Collect live traffic data** from the TomTom API.
-        2. **Store traffic readings** in a SQLite database.
+        1. **Collect traffic data** from TomTom and seeded traffic records.
+        2. **Store traffic readings** in SQLite.
         3. **Add crash history** from NYC collision records.
-        4. **Add weather data** because weather can affect traffic.
-        5. **Train a forecasting model** to estimate future congestion.
+        4. **Add weather data** from Open-Meteo.
+        5. **Train and compare models** using LSTM and ARIMA.
         6. **Display the results** in this dashboard.
         """
     )
@@ -604,7 +738,8 @@ with pipeline_tab:
         - Normal road speed
         - Current congestion level
         - Future congestion estimate
-        - Crash history
-        - Model input data
+        - LSTM model results
+        - ARIMA baseline comparison
+        - Crash history and crash locations
         """
     )

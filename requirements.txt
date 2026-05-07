@@ -7,3 +7,5 @@ python-dotenv
 scikit-learn
 torch
 altair
+statsmodels
+joblib
