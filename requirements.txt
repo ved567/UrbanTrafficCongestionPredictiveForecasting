@@ -1,0 +1,8 @@
+requests
+python-dotenv
+pandas
+tinydb
+torch
+scikit-learn
+streamlit
+numpy
