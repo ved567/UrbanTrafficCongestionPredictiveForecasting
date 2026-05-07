@@ -6,4 +6,4 @@
 *.db
 *.json
 __pycache__/
-*.pyc
+*.pyc.DS_Store
