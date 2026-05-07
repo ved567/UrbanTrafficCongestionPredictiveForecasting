@@ -1,8 +1,9 @@
-requests
-python-dotenv
-pandas
-tinydb
-torch
-scikit-learn
 streamlit
+pandas
 numpy
+requests
+tinydb
+python-dotenv
+scikit-learn
+torch
+altair
