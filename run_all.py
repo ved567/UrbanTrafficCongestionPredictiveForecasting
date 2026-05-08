@@ -71,6 +71,9 @@ def run_pipeline():
         print("Step 5: Training LSTM Model...")
         subprocess.run([sys.executable, "models/model_training.py"], check=True)
 
+        print("Step 6: Evaluating Models (LSTM vs ARIMA)...")
+        subprocess.run([sys.executable, "models/evaluate_models.py", "--epochs", "50"], check=True)
+
         print("\n--- Pipeline Execution Complete ---")
         print("The Traffic Collector is still running in the background.")
         print("You can now launch the dashboard: streamlit run dashboard/app.py")
