@@ -17,10 +17,6 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# -----------------------------
-# File/path helpers
-# -----------------------------
-
 def is_ignored_path(path: Path) -> bool:
     ignored = {".git", ".venv", "venv", "__pycache__"}
     return any(part in ignored for part in path.parts)
@@ -90,10 +86,6 @@ ARIMA_PREDICTIONS_PATH = find_file(
 )
 
 
-# -----------------------------
-# Page setup
-# -----------------------------
-
 st.set_page_config(
     page_title="FDR Drive Traffic Forecast",
     layout="wide"
@@ -123,10 +115,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
-# -----------------------------
-# Loaders
-# -----------------------------
 
 def load_final_data():
     if FINAL_CSV is None or not FINAL_CSV.exists():
@@ -243,10 +231,6 @@ def load_predictions():
     return lstm_df, arima_df
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-
 def classify_congestion(speed, normal_speed):
     if pd.isna(speed) or pd.isna(normal_speed) or normal_speed <= 0:
         return "Unknown"
@@ -277,23 +261,49 @@ def weather_code_to_text(code):
         return "Unknown"
 
     return {
-        0: "Clear",
-        1: "Mostly clear",
-        2: "Partly cloudy",
+        0: "Clear / Sunny",
+        1: "Mostly Sunny",
+        2: "Partly Cloudy",
         3: "Cloudy",
-        45: "Fog",
-        48: "Fog",
-        51: "Light drizzle",
+        45: "Foggy",
+        48: "Foggy",
+        51: "Light Drizzle",
         53: "Drizzle",
-        55: "Heavy drizzle",
-        61: "Light rain",
+        55: "Heavy Drizzle",
+        61: "Light Rain",
         63: "Rain",
-        65: "Heavy rain",
-        71: "Light snow",
+        65: "Heavy Rain",
+        71: "Light Snow",
         73: "Snow",
-        75: "Heavy snow",
+        75: "Heavy Snow",
+        80: "Rain Showers",
+        81: "Rain Showers",
+        82: "Heavy Rain Showers",
         95: "Thunderstorm",
-    }.get(code, f"Code {code}")
+        96: "Thunderstorm with Hail",
+        99: "Thunderstorm with Heavy Hail",
+    }.get(code, f"Weather Code {code}")
+
+
+def weather_driving_note(weather_text):
+    text = str(weather_text).lower()
+
+    if "thunderstorm" in text:
+        return "Severe weather may reduce visibility and slow traffic."
+    if "heavy rain" in text or "heavy drizzle" in text:
+        return "Wet roads and lower visibility may increase congestion."
+    if "rain" in text or "drizzle" in text:
+        return "Rain can slow traffic and increase stopping distance."
+    if "snow" in text:
+        return "Snow can create slower and more difficult driving conditions."
+    if "fog" in text:
+        return "Fog can reduce visibility and slow traffic."
+    if "cloudy" in text:
+        return "Cloudy weather usually has a lower traffic impact."
+    if "sunny" in text or "clear" in text:
+        return "Clear weather usually supports normal driving conditions."
+
+    return "Weather impact is not available for this condition."
 
 
 def make_line_chart(data, x_col, value_cols, y_title="Speed (mph)"):
@@ -350,6 +360,84 @@ def make_line_chart(data, x_col, value_cols, y_title="Speed (mph)"):
     )
 
     st.altair_chart(chart, width="stretch")
+
+
+def make_weather_map(latest_row):
+    fdr_lat = 40.7478
+    fdr_lon = -73.9718
+
+    temperature = latest_row.get("temperature", None)
+    weather_code = latest_row.get("weather_code", None)
+    weather_text = weather_code_to_text(weather_code)
+    driving_note = weather_driving_note(weather_text)
+
+    if pd.notna(temperature):
+        temp_text = f"{float(temperature):.1f} °C"
+        label = f"{weather_text}, {float(temperature):.1f}°C"
+    else:
+        temp_text = "N/A"
+        label = weather_text
+
+    st.subheader("Weather Near FDR Drive")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Condition", weather_text)
+    col2.metric("Temperature", temp_text)
+    col3.metric("Weather Code", weather_code if pd.notna(weather_code) else "N/A")
+
+    st.caption(driving_note)
+
+    weather_df = pd.DataFrame([{
+        "lat": fdr_lat,
+        "lon": fdr_lon,
+        "Location": "FDR Drive Point",
+        "Condition": weather_text,
+        "Temperature": temp_text,
+        "Driving Impact": driving_note,
+        "Label": label
+    }])
+
+    if pdk is not None:
+        point_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=weather_df,
+            get_position="[lon, lat]",
+            get_radius=280,
+            get_fill_color=[185, 28, 28, 180],
+            pickable=True,
+        )
+
+        text_layer = pdk.Layer(
+            "TextLayer",
+            data=weather_df,
+            get_position="[lon, lat]",
+            get_text="Label",
+            get_size=17,
+            get_color=[255, 255, 255],
+            get_text_anchor="'middle'",
+            get_alignment_baseline="'bottom'",
+            pickable=True,
+        )
+
+        view_state = pdk.ViewState(
+            latitude=fdr_lat,
+            longitude=fdr_lon,
+            zoom=13,
+            pitch=35,
+        )
+
+        deck = pdk.Deck(
+            layers=[point_layer, text_layer],
+            initial_view_state=view_state,
+            tooltip={
+                "html": "<b>{Location}</b><br/>Condition: {Condition}<br/>Temperature: {Temperature}<br/>Impact: {Driving Impact}",
+                "style": {"backgroundColor": "white", "color": "black"}
+            }
+        )
+
+        st.pydeck_chart(deck, width="stretch")
+    else:
+        st.map(weather_df[["lat", "lon"]], width="stretch")
 
 
 def make_metrics_bar(metrics_data):
@@ -463,24 +551,16 @@ def build_prediction_comparison(lstm_df, arima_df):
     return plot_df
 
 
-# -----------------------------
-# Load all data
-# -----------------------------
-
 df = load_final_data()
 traffic_db_df = load_traffic_from_db()
 
-# If processed CSV is missing, still allow overview/forecast from SQLite.
+
 traffic_source_df = df if not df.empty else traffic_db_df
 
 accidents_df = load_accidents()
 metrics = load_json(METRICS_PATH)
 lstm_predictions, arima_predictions = load_predictions()
 
-
-# -----------------------------
-# Header
-# -----------------------------
 
 st.title("FDR Drive Traffic Forecast")
 st.markdown(
@@ -492,10 +572,6 @@ overview_tab, forecast_tab, model_tab, crash_tab, pipeline_tab = st.tabs(
     ["Overview", "Future Forecast", "Model Results", "Crash History", "Project Pipeline"]
 )
 
-
-# -----------------------------
-# Overview
-# -----------------------------
 
 with overview_tab:
     st.subheader("Current Traffic Conditions")
@@ -534,14 +610,21 @@ with overview_tab:
         if "captured_at" in traffic_source_df.columns:
             st.write(f"Last updated: **{latest['captured_at']}**")
 
+        if not df.empty:
+            weather_latest = df.iloc[-1]
+        else:
+            weather_latest = latest
+
+        make_weather_map(weather_latest)
+
         st.subheader("Traffic Speed Trend")
 
         st.write(
-            "This graph compares actual traffic speed with normal road speed. "
-            "If the red line is far below the gray line, traffic is more congested."
+            "This graph compares current traffic speed with normal road speed. "
+            "When the red line is below the gray line, traffic is slower than normal."
         )
 
-        chart_df = traffic_source_df.tail(80).rename(
+        speed_chart_df = traffic_source_df.tail(80).rename(
             columns={
                 "captured_at": "Time",
                 "current_speed": "Current Speed",
@@ -550,10 +633,12 @@ with overview_tab:
         )
 
         make_line_chart(
-            chart_df,
+            speed_chart_df,
             "Time",
             ["Current Speed", "Normal Speed"]
         )
+
+
 
         if not df.empty:
             st.subheader("Data Used for Prediction")
@@ -570,10 +655,6 @@ with overview_tab:
                 "Weather and time help explain traffic changes."
             )
 
-
-# -----------------------------
-# Future Forecast
-# -----------------------------
 
 with forecast_tab:
     st.subheader("Future Congestion Forecast")
@@ -598,8 +679,27 @@ with forecast_tab:
                 "Predicted Speed: higher is better. Expected Congestion: Low is best, High is worst."
             )
 
+            if not df.empty and "weather_code" in df.columns:
+                weather_row = df.iloc[-1]
+                forecast_weather = weather_code_to_text(weather_row.get("weather_code", None))
+                forecast_temp = weather_row.get("temperature", None)
+
+                if pd.notna(forecast_temp):
+                    st.write(
+                        f"Weather used for this forecast: **{forecast_weather}**, "
+                        f"**{float(forecast_temp):.1f}°C** near FDR Drive."
+                    )
+                else:
+                    st.write(
+                        f"Weather used for this forecast: **{forecast_weather}** near FDR Drive."
+                    )
+            else:
+                st.write(
+                    "Weather data is not available yet. Run the full pipeline to add weather information."
+                )
+
             st.write(
-                "This forecast uses the latest speed trend to estimate short-term traffic changes."
+                "This forecast uses the latest speed trend and available weather data to estimate short-term traffic changes."
             )
 
             st.dataframe(forecast_df, width="stretch", hide_index=True)
@@ -673,10 +773,6 @@ with forecast_tab:
             st.altair_chart(forecast_chart, width="stretch")
 
 
-# -----------------------------
-# Model Results
-# -----------------------------
-
 with model_tab:
     st.subheader("Model Results")
 
@@ -715,10 +811,10 @@ with model_tab:
             model_cols.append("ARIMA Prediction")
 
         st.write(
-            "The model results are split into two graphs to keep the lines easier to read."
+            "The model comparisons are shown separately so each prediction is easier to compare with the actual traffic speed."
         )
 
-        # Smooth the graph slightly so the trend is easier to see.
+
         smooth_df = comparison_df.sort_values("Time").copy()
 
         rolling_window = 5 if len(smooth_df) >= 10 else 3
@@ -744,8 +840,7 @@ with model_tab:
         )
 
         st.caption(
-            f"This graph uses a {rolling_window}-point rolling average to make the trend easier to read. "
-            "Red = actual speed. Blue = LSTM prediction."
+            "Red = actual speed. Blue = LSTM prediction. The closer the lines are, the better the model performed."
         )
 
         if "ARIMA Prediction" in smooth_df.columns:
@@ -763,8 +858,7 @@ with model_tab:
             )
 
             st.caption(
-                f"This graph uses a {rolling_window}-point rolling average to make the trend easier to read. "
-                "Red = actual speed. Orange = ARIMA prediction."
+                "Red = actual speed. Orange = ARIMA prediction. The closer the lines are, the better the model performed."
             )
 
         with st.expander("Show prediction data"):
@@ -774,10 +868,6 @@ with model_tab:
                 hide_index=True
             )
 
-
-# -----------------------------
-# Crash History
-# -----------------------------
 
 with crash_tab:
     st.subheader("Historical Crash Information")
@@ -822,7 +912,7 @@ with crash_tab:
                 st.subheader("Crash Location Map")
 
                 st.write(
-                    "This is the original point map. Each point represents one crash record."
+                    "Each point represents a recorded FDR Drive crash."
                 )
 
                 point_map = map_df[["latitude", "longitude"]].rename(
@@ -837,8 +927,7 @@ with crash_tab:
                     st.warning("PyDeck is not installed. Run: pip install pydeck")
                 else:
                     st.write(
-                        "This heatmap shows where crashes are concentrated. "
-                        "Darker areas mean more crash records are clustered together."
+                        "This heatmap highlights areas with more recorded crashes."
                     )
 
                     heatmap_layer = pdk.Layer(
@@ -916,10 +1005,6 @@ with crash_tab:
             st.dataframe(accidents_df.head(100), width="stretch", hide_index=True)
 
 
-# -----------------------------
-# Project Pipeline
-# -----------------------------
-
 with pipeline_tab:
     st.subheader("Project Purpose")
 
@@ -952,21 +1037,3 @@ with pipeline_tab:
         """
     )
 
-    with st.expander("Detected local files"):
-        st.write("Processed dataset:")
-        st.code(str(FINAL_CSV) if FINAL_CSV else "Not found")
-
-        st.write("Traffic database:")
-        st.code(str(TRAFFIC_DB) if TRAFFIC_DB else "Not found")
-
-        st.write("Crash data:")
-        st.code(str(ACCIDENTS_JSON) if ACCIDENTS_JSON else "Not found")
-
-        st.write("Metrics:")
-        st.code(str(METRICS_PATH) if METRICS_PATH else "Not found")
-
-        st.write("LSTM predictions:")
-        st.code(str(LSTM_PREDICTIONS_PATH) if LSTM_PREDICTIONS_PATH else "Not found")
-
-        st.write("ARIMA predictions:")
-        st.code(str(ARIMA_PREDICTIONS_PATH) if ARIMA_PREDICTIONS_PATH else "Not found")
