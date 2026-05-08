@@ -9,3 +9,4 @@ torch
 altair
 statsmodels
 joblib
+pydeck

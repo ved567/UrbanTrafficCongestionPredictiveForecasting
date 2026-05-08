@@ -1,7 +1,27 @@
 .env
-
-*.csv
-*.db*
-*.json
+.venv/
+venv/
 __pycache__/
-*.pyc.DS_Store
+*.pyc
+.DS_Store
+
+# Generated data files
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.csv
+data/*.json
+
+# Generated model/output files
+models/*.pth
+models/metrics.json
+models/*_metrics.json
+models/*_predictions.csv
+
+# Backup files
+dashboard/app_backup.py
+run_all_backup.py
+scripts/*_backup.py
+
+# Temporary output
+tomtom_fdr_flow.csv

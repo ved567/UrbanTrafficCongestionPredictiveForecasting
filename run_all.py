@@ -1,94 +1,73 @@
 import subprocess
-import time
 import sys
-import os
-import signal
+from pathlib import Path
 
-def check_env():
-    """
-    Verifies that the .env file exists in the root directory.
-    If missing, terminates the process with a critical error message.
-    """
-    if not os.path.exists(".env"):
-        print("CRITICAL ERROR: .env file not found!")
-        print("Please create a .env file based on .env.example with your TOMTOM_API_KEY.")
-        sys.exit(1)
 
-def run_pipeline():
-    """
-    Orchestrates the end-to-end traffic prediction pipeline.
-    Manages background processes and executes data ingestion, 
-    feature engineering, and model training steps sequentially.
-    """
-    check_env()
-    
-    print("--- Starting Urban Traffic Predictive System ---")
+ROOT = Path(__file__).resolve().parent
 
-    print("Step 1: Launching Background Traffic Collector...")
-    
-    collector_process = subprocess.Popen(
-        [sys.executable, "scripts/traffic_collector.py"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT
-    )
-    
-    terminated = False
 
-    def shutdown_handler(signum, frame):
-        """
-        Handles graceful shutdown of the background collector process 
-        upon receiving termination signals.
-        """
-        nonlocal terminated
-        if not terminated:
-            print("\n\n--- Shutdown Signal Received ---")
-            print(f"Stopping Background Collector (PID: {collector_process.pid})...")
-            collector_process.terminate()
-            try:
-                collector_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Collector did not stop gracefully, forcing kill...")
-                collector_process.kill()
-            print("System Shutdown Cleanly.")
-            terminated = True
-            sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
-
-    time.sleep(5)
+def run_step(step_name, command):
+    print("\n" + "=" * 70)
+    print(step_name)
+    print("=" * 70)
 
     try:
-        print("Step 2: Seeding Historical Data...")
-        subprocess.run([sys.executable, "scripts/db_seeder.py"], check=True)
+        subprocess.run(command, check=True)
+        print(f"{step_name} completed successfully.")
+    except subprocess.CalledProcessError:
+        print(f"\nPipeline failed during: {step_name}")
+        print(f"Command failed: {' '.join(command)}")
+        sys.exit(1)
 
-        print("Step 3: Processing Accident Data (NoSQL)...")
-        subprocess.run([sys.executable, "scripts/accident_ingestion.py"], check=True)
 
-        print("Step 4: Merging SQL + NoSQL + Weather...")
-        subprocess.run([sys.executable, "scripts/feature_engineering.py"], check=True)
+def main():
+    print("\nStarting Urban Traffic Congestion Predictive Forecasting Pipeline")
 
-        print("Step 5: Training LSTM Model...")
-        subprocess.run([sys.executable, "models/model_training.py"], check=True)
+    data_dir = ROOT / "data"
+    models_dir = ROOT / "models"
 
-        print("Step 6: Evaluating Models (LSTM vs ARIMA)...")
-        subprocess.run([sys.executable, "models/evaluate_models.py", "--epochs", "50"], check=True)
+    data_dir.mkdir(exist_ok=True)
+    models_dir.mkdir(exist_ok=True)
 
-        print("\n--- Pipeline Execution Complete ---")
-        print("The Traffic Collector is still running in the background.")
-        print("You can now launch the dashboard: streamlit run dashboard/app.py")
-        print("Press Ctrl+C to stop the collector and exit.")
-        
-        while True:
-            time.sleep(1)
+    run_step(
+        "Step 1: Creating traffic database",
+        [sys.executable, "scripts/db_seeder.py"]
+    )
 
-    except subprocess.CalledProcessError as e:
-        print(f"\nPipeline Failed at step: {e.cmd}")
-        shutdown_handler(None, None)
-    except Exception as e:
-        if not isinstance(e, SystemExit):
-            print(f"\nAn unexpected error occurred: {e}")
-            shutdown_handler(None, None)
+    run_step(
+        "Step 2: Downloading and processing NYC collision data",
+        [sys.executable, "scripts/accident_ingestion.py"]
+    )
+
+    run_step(
+        "Step 3: Creating final AI dataset",
+        [sys.executable, "scripts/feature_engineering.py"]
+    )
+
+    run_step(
+        "Step 4: Training and evaluating LSTM and ARIMA models",
+        [sys.executable, "models/evaluate_models.py"]
+    )
+
+    print("\n" + "=" * 70)
+    print("Pipeline completed successfully.")
+    print("=" * 70)
+
+    print("\nGenerated files:")
+    print("data/traffic_data.db")
+    print("data/nyc_collisions_final.json")
+    print("data/accidents_nosql.json")
+    print("data/final_ai_data.csv")
+    print("models/traffic_lstm.pth")
+    print("models/metrics.json")
+    print("models/lstm_metrics.json")
+    print("models/arima_metrics.json")
+    print("models/lstm_predictions.csv")
+    print("models/arima_predictions.csv")
+
+    print("\nTo open the dashboard, run:")
+    print("streamlit run dashboard/app.py")
+
 
 if __name__ == "__main__":
-    run_pipeline()
+    main()

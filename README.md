@@ -13,10 +13,11 @@ This project aims to predict urban traffic congestion using real-time traffic da
 ## Setup
 
 1.  Clone the repository.
-2.  Install dependencies (e.g., `pip install pandas requests tinydb torch streamlit`).
+2.  Install dependencies (pip install -r requirements.txt).
 3.  Copy `.env.example` to `.env` and add your TomTom API key.
 4.  Run the system using `python run_all.py`.
+5.  Streamlit run dashboard/app.py
 
 ## Branching
 - `main`: Stable base folder structure.
-- `kirollos-db-optimization`: Ongoing database and structure optimizations.
+
