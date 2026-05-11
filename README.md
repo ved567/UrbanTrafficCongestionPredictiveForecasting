@@ -4,6 +4,10 @@ This project predicts short-term traffic congestion on FDR Drive using traffic s
 
 The system builds a full data pipeline that generates traffic data, downloads and processes NYC collision records, adds weather features, trains LSTM and ARIMA forecasting models, and displays the results in a Streamlit dashboard.
 
+## Project Demo Video
+
+https://youtu.be/f8Nt18n-TxI?si=S4idHr-O1JtlaIUj
+
 ## Project Features
 
 - Generates traffic records for an FDR Drive location
